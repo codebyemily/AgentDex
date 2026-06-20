@@ -1,0 +1,6 @@
+uagents>=0.13.0
+anthropic>=0.30.0
+browserbase>=0.3.0
+playwright>=1.44.0
+python-dotenv>=1.0.0
+sentry-sdk>=2.0.0

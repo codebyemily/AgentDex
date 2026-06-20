@@ -74,6 +74,9 @@ async def _handle_speculative(ctx: Context, sender: str, msg: ResearchRequest):
             sentry_sdk.capture_message(
                 f"Speculative worker timeout: {msg.topic}", level="warning"
             )
+            # Flush so the event isn't lost if the process exits before the
+            # background worker delivers it
+            sentry_sdk.flush(timeout=5)
 
 
 def _to_result(msg: ResearchRequest, result: dict) -> ResearchResult:

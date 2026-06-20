@@ -68,9 +68,9 @@ async def on_query(ctx: Context, sender: str, msg: TopicQuery):
         if key in warm_set:
             ctx.logger.info(f"[orchestrator] '{candidate}' already warm — skipping")
             continue
-        ctx.logger.info(f"[orchestrator] spawning speculative worker for '{candidate}'")
+        ctx.logger.info(f"[orchestrator] dispatching speculative bet for '{candidate}'")
         await ctx.send(
-            config.SPECULATIVE_WORKER_ADDRESS,
+            config.PRIMARY_WORKER_ADDRESS,
             ResearchRequest(
                 topic=candidate,
                 session_id=f"spec-{candidate}",

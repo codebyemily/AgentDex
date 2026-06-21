@@ -73,7 +73,7 @@ async def embed(text: str) -> list[float]:
 
 # ── Index lifecycle ───────────────────────────────────────────────────────────
 
-def _get_index() -> SearchIndex:
+def _get_index() -> Optional[SearchIndex]:
     global _index
     if _index is None:
         redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379")
@@ -118,15 +118,23 @@ def _get_index() -> SearchIndex:
 
         try:
             idx.create(overwrite=False)
-        except Exception:
-            pass  # index already exists
-        _index = idx
+            _index = idx  # only cache if connection succeeded
+        except Exception as exc:
+            # If the index already exists that's fine; any other error means
+            # Redis is unreachable — leave _index as None so callers can degrade.
+            if "already exists" in str(exc).lower() or "index already exists" in str(exc).lower():
+                _index = idx
+            else:
+                print(f"[redis_client] Redis unavailable: {exc} — cache disabled", flush=True)
     return _index
 
 
 # ── Write path ────────────────────────────────────────────────────────────────
 
 def _upsert_topic_sync(topic: str, vector: list[float], data: dict) -> None:
+    idx = _get_index()
+    if idx is None:
+        return
     doc = {
         "id": _topic_id(topic),
         "topic": topic.lower().strip(),
@@ -138,7 +146,6 @@ def _upsert_topic_sync(topic: str, vector: list[float], data: dict) -> None:
         "mcp_tools": json.dumps(data.get("mcp_tools", [])),
         "cached_at": data.get("cached_at", time.time()),
     }
-    idx = _get_index()
     # id_field="id" makes the key predictable (agentdex:topic:{_topic_id(topic)})
     # rather than a SHA256 hash, so get_warm() can look it up directly.
     idx.load([doc], id_field="id")
@@ -161,8 +168,11 @@ async def set_warm(topic: str, data: dict) -> None:
 # ── Read path ─────────────────────────────────────────────────────────────────
 
 def _get_warm_sync(topic: str) -> Optional[dict]:
+    idx = _get_index()
+    if idx is None or idx.client is None:
+        return None
     key = f"{INDEX_PREFIX}:{_topic_id(topic)}"
-    raw: dict = _get_index().client.hgetall(key)
+    raw: dict = idx.client.hgetall(key)
     if not raw:
         return None
 
@@ -193,6 +203,8 @@ async def get_warm(topic: str) -> Optional[dict]:
 # ── Nearest-neighbor search ───────────────────────────────────────────────────
 
 def _search_nearest_sync(vector: list[float], k: int) -> list[tuple[str, float]]:
+    if _get_index() is None:
+        return []
     query = VectorQuery(
         vector=vector,
         vector_field_name="embedding",
@@ -236,7 +248,10 @@ async def search_nearest(query_topic: str, k: int = 10) -> list[str]:
 # ── Topic registry ────────────────────────────────────────────────────────────
 
 def _all_topics_sync() -> list[str]:
-    members = _get_index().client.smembers(WARM_TOPICS_KEY)
+    idx = _get_index()
+    if idx is None or idx.client is None:
+        return []
+    members = idx.client.smembers(WARM_TOPICS_KEY)
     return [m.decode() if isinstance(m, bytes) else m for m in members]
 
 

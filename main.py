@@ -34,7 +34,7 @@ print(f"  speculative_worker {config.SPECULATIVE_WORKER_ADDRESS}")
 print(f"  dev_agent          {config.DEV_AGENT_ADDRESS}")
 print("─" * 60)
 
-bureau = Bureau()
+bureau = Bureau(port=8001)
 bureau.add(orchestrator)
 bureau.add(primary_worker)
 bureau.add(speculative_worker)

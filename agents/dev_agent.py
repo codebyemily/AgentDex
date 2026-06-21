@@ -1,14 +1,13 @@
-"""The fake "developer's agent" that drives the demo.
+"""Developer agent — sends a batch of topics to AgentDex and receives back
+structured research + the MCP tool definitions AgentDex generated for each.
 
-It asks two questions in sequence:
-  1. "atoms"     — cold. Nothing is warm yet, so the primary worker browses it
-                   live AND the orchestrator speculatively pre-warms likely
-                   follow-ups (electrons, protons, ...).
-  2. "electrons" — by the time we ask, a speculative worker has already warmed
-                   it. The orchestrator serves it instantly: a WARM HIT.
-
-The panel's headline proof is the gap between when 'electrons' went warm
-(spec_warm event) and when we actually asked for it (dev_query event).
+Flow:
+  1. Sends TopicBatch with all topics at once.
+  2. Orchestrator fans them out in parallel to primary_worker(s).
+  3. Each worker crawls Wikipedia, classifies with Claude (generating mcp_tools),
+     and stores the result in Redis.
+  4. When all are done, orchestrator sends a BatchResult back here.
+  5. dev_agent logs the MCP tools now callable via mcp_server.py.
 """
 
 import asyncio
@@ -18,65 +17,70 @@ from dotenv import load_dotenv
 from uagents import Agent, Context
 
 import shared.config as config
-from shared.messages import TopicQuery, ResearchResult
+from shared.messages import TopicBatch, BatchResult
 from shared.demo_events import emit_demo_event
 
 load_dotenv()
 
 dev_agent = Agent(name="dev_agent", seed=config.DEV_AGENT_SEED)
 
-# Two-query demo: "atoms" is cold, "electrons" should be a warm hit.
-_DEMO_TOPICS = ["atoms", "electrons"]
-_query_index = 0
-
-# How long the "developer" appears to think between questions. This is also the
-# window the speculative worker has to finish warming "electrons".
-_THINK_SECS = 8
-
-
-async def _ask(ctx: Context, topic: str, session_id: str):
-    ctx.logger.info(f"[dev_agent] ── querying: '{topic}'")
-    emit_demo_event("dev_query", {"topic": topic, "session_id": session_id})
-    await ctx.send(config.ORCHESTRATOR_ADDRESS, TopicQuery(topic=topic, session_id=session_id))
+_BATCH_SESSION = "demo-batch-1"
+_DEMO_TOPICS = ["atoms", "electrons", "protons", "quantum mechanics", "periodic table"]
 
 
 @dev_agent.on_event("startup")
 async def on_start(ctx: Context):
     ctx.logger.info(f"[dev_agent] started  address={ctx.agent.address}")
     await asyncio.sleep(2)  # give other agents time to register
-    await _ask(ctx, _DEMO_TOPICS[0], "demo-1")
 
+    ctx.logger.info(f"[dev_agent] ── sending batch of {len(_DEMO_TOPICS)} topics to AgentDex ──")
+    ctx.logger.info(f"[dev_agent]   topics: {_DEMO_TOPICS}")
+    ctx.logger.info(f"[dev_agent]   AgentDex will research all in parallel and generate MCP tools for each")
+    emit_demo_event("batch_query", {"topics": _DEMO_TOPICS, "session_id": _BATCH_SESSION})
 
-@dev_agent.on_message(model=ResearchResult)
-async def on_result(ctx: Context, sender: str, msg: ResearchResult):
-    global _query_index
-
-    hit_label = "*** WARM HIT ***" if msg.warm else "cold run"
-    facts = json.loads(msg.key_facts) if msg.key_facts else []
-    related = json.loads(msg.related_concepts) if msg.related_concepts else []
-    tools = json.loads(msg.mcp_tools) if msg.mcp_tools else []
-
-    ctx.logger.info(f"[dev_agent] ResearchResult received from {sender}")
-    ctx.logger.info(f"[dev_agent] [{hit_label}] topic='{msg.topic}'  session={msg.session_id}")
-    ctx.logger.info(f"[dev_agent]   content_type     : {msg.content_type}")
-    ctx.logger.info(f"[dev_agent]   summary          : {msg.summary}")
-    ctx.logger.info(f"[dev_agent]   key_facts ({len(facts)})    : {facts[:3]}")
-    ctx.logger.info(f"[dev_agent]   related_concepts : {related}")
-    ctx.logger.info(f"[dev_agent]   mcp_tools ({len(tools)})    : {[t.get('name') for t in tools]}")
-
-    emit_demo_event(
-        "dev_result",
-        {
-            "topic": msg.topic,
-            "session_id": msg.session_id,
-            "warm": msg.warm,
-            "summary": msg.summary,
-        },
+    await ctx.send(
+        config.ORCHESTRATOR_ADDRESS,
+        TopicBatch(topics=json.dumps(_DEMO_TOPICS), session_id=_BATCH_SESSION),
     )
 
-    _query_index += 1
-    if _query_index < len(_DEMO_TOPICS):
-        next_topic = _DEMO_TOPICS[_query_index]
-        ctx.logger.info(f"[dev_agent] thinking... ({_THINK_SECS}s)")
-        await asyncio.sleep(_THINK_SECS)
-        await _ask(ctx, next_topic, f"demo-{_query_index + 1}")
+
+@dev_agent.on_message(model=BatchResult)
+async def on_batch_result(ctx: Context, sender: str, msg: BatchResult):
+    results = json.loads(msg.results)
+
+    ctx.logger.info(f"[dev_agent] BatchResult received from {sender}  session={msg.session_id}")
+    ctx.logger.info(f"[dev_agent] {len(results)} topics researched:")
+
+    for r in results:
+        hit_label = "WARM HIT" if r.get("warm") else "cold run"
+        facts = r.get("key_facts", [])
+        related = r.get("related_concepts", [])
+        tools = r.get("mcp_tools", [])
+
+        ctx.logger.info(f"[dev_agent]   ── [{hit_label}] {r['topic']} ──")
+        ctx.logger.info(f"[dev_agent]     content_type     : {r.get('content_type')}")
+        ctx.logger.info(f"[dev_agent]     summary          : {r.get('summary', '')[:100]}...")
+        ctx.logger.info(f"[dev_agent]     key_facts ({len(facts)})    : {facts[:3]}")
+        ctx.logger.info(f"[dev_agent]     related_concepts : {related}")
+        ctx.logger.info(f"[dev_agent]     mcp_tools ({len(tools)})    : {[t.get('name') for t in tools]}")
+
+    emit_demo_event("batch_result", {
+        "session_id": msg.session_id,
+        "topics": [r["topic"] for r in results],
+        "warm_count": sum(1 for r in results if r.get("warm")),
+    })
+
+    # ── MCP tools now accessible via mcp_server.py ───────────────────────────
+    ctx.logger.info(f"[dev_agent] ── MCP tools now available via mcp_server.py ──")
+    ctx.logger.info(f"[dev_agent]   (connect with: python mcp_server.py)")
+    for r in results:
+        tools = r.get("mcp_tools", [])
+        if tools:
+            for t in tools:
+                ctx.logger.info(
+                    f"[dev_agent]   {r['topic']:20s} → {t.get('name', '?'):30s}  {t.get('description', '')[:60]}"
+                )
+        else:
+            ctx.logger.info(f"[dev_agent]   {r['topic']:20s} → (no tools generated)")
+
+    ctx.logger.info(f"[dev_agent] ── done ──")

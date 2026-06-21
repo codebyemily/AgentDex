@@ -14,5 +14,4 @@ SEMANTIC_HIT_THRESHOLD: float = float(os.getenv("SEMANTIC_HIT_THRESHOLD", "0.15"
 # Populated by main.py before the Bureau starts
 ORCHESTRATOR_ADDRESS: str = ""
 PRIMARY_WORKER_ADDRESS: str = ""
-SPECULATIVE_WORKER_ADDRESS: str = ""
 DEV_AGENT_ADDRESS: str = ""

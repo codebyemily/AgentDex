@@ -1,4 +1,8 @@
 .env
-.venv/
+.venv
 __pycache__/
 *.pyc
+uv_*.log.venv/
+__pycache__/
+*.pyc
+RUNBOOK.md

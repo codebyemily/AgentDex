@@ -1,6 +1,18 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+# Python 3.14 no longer auto-creates an event loop in the main thread, but
+# uagents' Agent() grabs one at construction time. Create it before any agent
+# is imported/built, or the Bureau can't start.
+import asyncio
+asyncio.set_event_loop(asyncio.new_event_loop())
+
+from shared.observability import init_sentry
+init_sentry()  # one init for the whole process — covers primary + speculative paths
+
+from shared.demo_events import reset
+reset()  # start every run with a clean panel stream
+
 import shared.config as config
 from agents.orchestrator_agent import orchestrator
 from agents.primary_worker import primary_worker

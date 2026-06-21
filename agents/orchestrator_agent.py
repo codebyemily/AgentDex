@@ -8,6 +8,7 @@ import shared.config as config
 from shared.cache import get_warm, all_topics
 from shared.messages import TopicQuery, ResearchRequest, ResearchResult
 from shared.pipeline import get_speculative_candidates
+from shared.demo_events import emit_demo_event
 
 load_dotenv()
 
@@ -29,11 +30,22 @@ async def on_start(ctx: Context):
 @orchestrator.on_message(model=TopicQuery)
 async def on_query(ctx: Context, sender: str, msg: TopicQuery):
     ctx.logger.info(f"[orchestrator] query: '{msg.topic}'  session={msg.session_id}")
+    emit_demo_event(
+        "query_received", {"topic": msg.topic, "session_id": msg.session_id}
+    )
 
     # ── Warm-cache check ──────────────────────────────────────────────────────
     cached = get_warm(msg.topic)
     if cached:
         ctx.logger.info(f"[orchestrator] WARM HIT — serving '{msg.topic}' instantly")
+        emit_demo_event(
+            "warm_hit",
+            {
+                "topic": msg.topic,
+                "session_id": msg.session_id,
+                "warmed_at": cached.get("cached_at"),
+            },
+        )
         await ctx.send(
             sender,
             ResearchResult(
@@ -53,6 +65,9 @@ async def on_query(ctx: Context, sender: str, msg: TopicQuery):
     # ── Dispatch primary worker ───────────────────────────────────────────────
     _pending[msg.session_id] = sender
     ctx.logger.info(f"[orchestrator] dispatching primary worker for '{msg.topic}'")
+    emit_demo_event(
+        "cold_dispatch", {"topic": msg.topic, "session_id": msg.session_id}
+    )
     await ctx.send(
         config.PRIMARY_WORKER_ADDRESS,
         ResearchRequest(topic=msg.topic, session_id=msg.session_id, is_speculative=False),
@@ -62,13 +77,20 @@ async def on_query(ctx: Context, sender: str, msg: TopicQuery):
     candidates = await get_speculative_candidates(msg.topic, config.SPECULATION_BUDGET)
     warm_set = set(all_topics())
     ctx.logger.info(f"[orchestrator] speculative candidates: {candidates}")
+    emit_demo_event(
+        "speculation_planned", {"parent": msg.topic, "candidates": candidates}
+    )
 
     for candidate in candidates:
         key = candidate.lower().strip()
         if key in warm_set:
             ctx.logger.info(f"[orchestrator] '{candidate}' already warm — skipping")
+            emit_demo_event(
+                "candidate_skipped", {"topic": candidate, "reason": "already_warm"}
+            )
             continue
         ctx.logger.info(f"[orchestrator] dispatching speculative bet for '{candidate}'")
+        emit_demo_event("spec_dispatch", {"topic": candidate, "parent": msg.topic})
         await ctx.send(
             config.PRIMARY_WORKER_ADDRESS,
             ResearchRequest(

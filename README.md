@@ -86,6 +86,94 @@ Then set `REDIS_URL=redis://localhost:6379` in `.env`.
 | `shared/messages.py` | uAgents message models: `TopicQuery`, `ResearchRequest`, `ResearchResult` |
 | `shared/config.py` | Seeds, address slots, and tuning constants |
 
+## MCP server — external agent access
+
+`mcp_server.py` exposes the AgentDex pipeline as an [MCP](https://modelcontextprotocol.io) server. Any MCP-compatible agent can use it without joining the internal uAgents Bureau.
+
+### How it fits in
+
+```
+┌─────────────────── Bureau (main.py) ───────────────────┐
+│  dev_agent ──TopicQuery──► orchestrator ──► workers    │  ← internal, uAgents protocol
+└────────────────────────────────────────────────────────┘
+
+External developer agent
+  └── mcp_server.py (stdio) ──► shared/pipeline.py       ← external, MCP protocol
+                             └──► shared/redis_client.py
+```
+
+The Bureau and the MCP server share the same Redis backend, so topics pre-warmed by the speculative pipeline are immediately available to external agents via `get_cached_topic` and `search_similar_topics`.
+
+### Tools
+
+| Tool | Parameters | What it does |
+|---|---|---|
+| `research_topic` | `topic: str` | Crawls Wikipedia, classifies with Claude, stores in Redis cache. Returns JSON with `summary`, `key_facts`, `related_concepts`, `mcp_tools`. |
+| `get_cached_topic` | `topic: str` | Direct Redis lookup. Returns cached JSON or `{}` if not warm. |
+| `search_similar_topics` | `query: str`, `k: int = 5` | Semantic KNN search. Returns `[{topic, distance}]` sorted by cosine distance. |
+| `list_warm_topics` | — | Lists all topics currently in the Redis cache. |
+
+### Claude Desktop / Claude Code
+
+Add to `claude_desktop_config.json` (macOS: `~/Library/Application Support/Claude/`):
+
+```json
+{
+  "mcpServers": {
+    "agentdex": {
+      "command": "python",
+      "args": ["/path/to/AgentDex/mcp_server.py"],
+      "env": {
+        "ANTHROPIC_API_KEY": "...",
+        "BROWSERBASE_API_KEY": "...",
+        "BROWSERBASE_PROJECT_ID": "...",
+        "REDIS_URL": "redis://localhost:6379"
+      }
+    }
+  }
+}
+```
+
+Claude will then call `research_topic`, `search_similar_topics`, etc. as native tools.
+
+### Python agent (MCP client)
+
+```python
+from mcp import ClientSession
+from mcp.client.stdio import stdio_client, StdioServerParameters
+
+params = StdioServerParameters(
+    command="python",
+    args=["/path/to/AgentDex/mcp_server.py"],
+    env={"ANTHROPIC_API_KEY": "...", "REDIS_URL": "redis://localhost:6379", ...},
+)
+
+async with stdio_client(params) as (read, write):
+    async with ClientSession(read, write) as session:
+        await session.initialize()
+
+        # Cold research — crawls Wikipedia + caches result
+        result = await session.call_tool("research_topic", {"topic": "black holes"})
+
+        # Warm lookup — instant if already cached
+        cached = await session.call_tool("get_cached_topic", {"topic": "black holes"})
+
+        # Semantic search across everything in the cache
+        similar = await session.call_tool("search_similar_topics", {"query": "event horizon", "k": 5})
+```
+
+### Direct Python import (same repo)
+
+If the developer's agent runs in the same Python environment, MCP is optional:
+
+```python
+from shared.pipeline import research_topic
+from shared.redis_client import get_warm, search_nearest_with_scores
+
+result = await research_topic("quantum entanglement")
+similar = await search_nearest_with_scores("spooky action", k=5)
+```
+
 ## Validation
 
 ```bash

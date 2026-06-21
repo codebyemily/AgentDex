@@ -1,6 +1,12 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import logging
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("sentence_transformers").setLevel(logging.WARNING)
+logging.getLogger("redisvl").setLevel(logging.WARNING)
+logging.getLogger("huggingface_hub").setLevel(logging.WARNING)
+
 # Python 3.14 no longer auto-creates an event loop in the main thread, but
 # uagents' Agent() grabs one at construction time. Create it before any agent
 # is imported/built, or the Bureau can't start.
@@ -34,7 +40,7 @@ print(f"  speculative_worker {config.SPECULATIVE_WORKER_ADDRESS}")
 print(f"  dev_agent          {config.DEV_AGENT_ADDRESS}")
 print("─" * 60)
 
-bureau = Bureau()
+bureau = Bureau(port=8001)
 bureau.add(orchestrator)
 bureau.add(primary_worker)
 bureau.add(speculative_worker)

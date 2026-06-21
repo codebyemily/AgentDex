@@ -66,7 +66,7 @@ async def _handle_speculative(ctx: Context, sender: str, msg: ResearchRequest):
             research_topic(msg.topic),
             timeout=config.SPECULATIVE_TIMEOUT_SECS,
         )
-        set_warm(msg.topic, result)
+        await set_warm(msg.topic, result)
         ctx.logger.info(
             f"[primary_worker] '{msg.topic}' is now WARM — ready for instant serving"
         )

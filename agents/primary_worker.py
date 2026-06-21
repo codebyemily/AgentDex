@@ -46,7 +46,7 @@ async def _handle_live(ctx: Context, sender: str, msg: ResearchRequest):
     emit_demo_event("cold_started", {"topic": msg.topic, "session_id": msg.session_id})
 
     result = await research_topic(msg.topic)
-    set_warm(msg.topic, result)
+    await set_warm(msg.topic, result)
 
     ctx.logger.info(f"[primary_worker] done — '{msg.topic}' ingested and warm")
     emit_demo_event("cold_done", {"topic": msg.topic, "session_id": msg.session_id})

@@ -50,7 +50,7 @@ async def classify_and_structure(topic: str, raw: str) -> dict:
     client = anthropic.AsyncAnthropic()
     resp = await client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=1_024,
+        max_tokens=2_048,
         messages=[
             {
                 "role": "user",
@@ -107,6 +107,69 @@ async def get_speculative_candidates(topic: str, budget: int = 3) -> list[str]:
         return [c for c in candidates if isinstance(c, str)][:budget]
     except Exception:
         return []
+
+
+async def filter_speculative_candidates(
+    topic: str,
+    raw_candidates: list[str],
+    budget: int = 3,
+) -> list[str]:
+    """Filter a precomputed vector-similarity list down to genuine next-question candidates.
+
+    Redis finds topics that are *similar*; this call asks Claude which of those are
+    actually *likely to be the next question*, which is the distinction the PRD calls
+    the core IP.  Only returns strings that appear in raw_candidates (safety check).
+    """
+    if not raw_candidates:
+        return []
+
+    normalized_topic = topic.lower().strip()
+    # Build a lookup set excluding the query topic itself (it can appear if already ingested).
+    valid_raw: dict[str, str] = {
+        c.lower().strip(): c
+        for c in raw_candidates
+        if c.lower().strip() != normalized_topic
+    }
+    if not valid_raw:
+        return []
+
+    client = anthropic.AsyncAnthropic()
+    resp = await client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=256,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f'A researcher just asked about "{topic}". '
+                    "Here are semantically similar topics found via vector search:\n"
+                    f"{json.dumps(list(valid_raw.keys()))}\n\n"
+                    f"From this list, select at most {budget} topics that a researcher "
+                    "would most likely ask about NEXT — meaning they are a genuine "
+                    "follow-up question, not merely thematically similar.\n\n"
+                    "Rules:\n"
+                    "- Only return topics from the provided list\n"
+                    "- Exclude topics that are similar but not a natural next step\n"
+                    "- Each returned topic must have its own Wikipedia page\n\n"
+                    'Example for "atoms": "electrons" is a good bet; '
+                    '"history of atomic theory" is similar but a bad bet.\n\n'
+                    "Return only a valid JSON array of strings — no markdown, no extra text."
+                ),
+            }
+        ],
+    )
+    try:
+        selected = json.loads(resp.content[0].text)
+        # Map back to the original raw_candidates strings to preserve their casing/form.
+        filtered = [
+            valid_raw[c.lower().strip()]
+            for c in selected
+            if isinstance(c, str) and c.lower().strip() in valid_raw
+        ]
+        return filtered[:budget]
+    except Exception:
+        # On parse failure return the top-budget raw candidates unchanged.
+        return list(valid_raw.values())[:budget]
 
 
 async def research_topic(topic: str) -> dict:

@@ -1,16 +1,3 @@
-import time
-from typing import Optional
+from shared.redis_client import get_warm, set_warm, all_topics
 
-_store: dict[str, dict] = {}
-
-
-def get_warm(topic: str) -> Optional[dict]:
-    return _store.get(topic.lower().strip())
-
-
-def set_warm(topic: str, data: dict) -> None:
-    _store[topic.lower().strip()] = {**data, "cached_at": time.time()}
-
-
-def all_topics() -> list[str]:
-    return list(_store.keys())
+__all__ = ["get_warm", "set_warm", "all_topics"]

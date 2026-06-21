@@ -33,7 +33,8 @@ async def on_start(ctx: Context):
 
 @speculative_worker.on_message(model=ResearchRequest)
 async def on_request(ctx: Context, sender: str, msg: ResearchRequest):
-    ctx.logger.info(f"[speculative_worker] betting on '{msg.topic}'...")
+    ctx.logger.info(f"[speculative_worker] request received — topic='{msg.topic}'  from={sender}")
+    ctx.logger.info(f"[speculative_worker] betting on '{msg.topic}' (timeout={config.SPECULATIVE_TIMEOUT_SECS}s)...")
 
     try:
         result = await asyncio.wait_for(
@@ -42,10 +43,12 @@ async def on_request(ctx: Context, sender: str, msg: ResearchRequest):
         )
         await set_warm(msg.topic, result)
         ctx.logger.info(
-            f"[speculative_worker] '{msg.topic}' is now WARM — ready for instant serving"
+            f"[speculative_worker] '{msg.topic}' is now WARM — ready for instant serving  "
+            f"key_facts={len(result.get('key_facts', []))}  "
+            f"related_concepts={result.get('related_concepts', [])}"
         )
 
-        # Notify orchestrator so it can log the warm registration
+        ctx.logger.info(f"[speculative_worker] notifying orchestrator — sending ResearchResult → {sender}")
         await ctx.send(
             sender,
             ResearchResult(
@@ -62,7 +65,7 @@ async def on_request(ctx: Context, sender: str, msg: ResearchRequest):
         )
     except asyncio.TimeoutError:
         ctx.logger.warning(
-            f"[speculative_worker] TIMEOUT on '{msg.topic}' — wasted bet, discarded"
+            f"[speculative_worker] TIMEOUT on '{msg.topic}' after {config.SPECULATIVE_TIMEOUT_SECS}s — wasted bet, discarded"
         )
         if os.getenv("SENTRY_DSN"):
             sentry_sdk.capture_message(

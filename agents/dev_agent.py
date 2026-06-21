@@ -53,11 +53,16 @@ async def on_result(ctx: Context, sender: str, msg: ResearchResult):
 
     hit_label = "*** WARM HIT ***" if msg.warm else "cold run"
     facts = json.loads(msg.key_facts) if msg.key_facts else []
+    related = json.loads(msg.related_concepts) if msg.related_concepts else []
+    tools = json.loads(msg.mcp_tools) if msg.mcp_tools else []
 
-    ctx.logger.info(f"[dev_agent] [{hit_label}] topic='{msg.topic}'")
-    ctx.logger.info(f"[dev_agent]   content_type : {msg.content_type}")
-    ctx.logger.info(f"[dev_agent]   summary      : {msg.summary}")
-    ctx.logger.info(f"[dev_agent]   top facts    : {facts[:3]}")
+    ctx.logger.info(f"[dev_agent] ResearchResult received from {sender}")
+    ctx.logger.info(f"[dev_agent] [{hit_label}] topic='{msg.topic}'  session={msg.session_id}")
+    ctx.logger.info(f"[dev_agent]   content_type     : {msg.content_type}")
+    ctx.logger.info(f"[dev_agent]   summary          : {msg.summary}")
+    ctx.logger.info(f"[dev_agent]   key_facts ({len(facts)})    : {facts[:3]}")
+    ctx.logger.info(f"[dev_agent]   related_concepts : {related}")
+    ctx.logger.info(f"[dev_agent]   mcp_tools ({len(tools)})    : {[t.get('name') for t in tools]}")
 
     emit_demo_event(
         "dev_result",

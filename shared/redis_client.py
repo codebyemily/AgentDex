@@ -62,7 +62,11 @@ def _get_model():
 
 
 def _embed_sync(text: str) -> list[float]:
-    return _get_model().encode(text, normalize_embeddings=True).tolist()
+    t0 = time.time()
+    print(f"[redis:embed] '{text}' — encoding with all-MiniLM-L6-v2...")
+    vec = _get_model().encode(text, normalize_embeddings=True).tolist()
+    print(f"[redis:embed] '{text}' — done  dims={len(vec)}  elapsed={time.time()-t0:.3f}s")
+    return vec
 
 
 async def embed(text: str) -> list[float]:
@@ -127,6 +131,13 @@ def _get_index() -> SearchIndex:
 # ── Write path ────────────────────────────────────────────────────────────────
 
 def _upsert_topic_sync(topic: str, vector: list[float], data: dict) -> None:
+    key = f"{INDEX_PREFIX}:{_topic_id(topic)}"
+    print(
+        f"[redis:upsert] '{topic}' — writing to key={key}  "
+        f"key_facts={len(data.get('key_facts', []))}  "
+        f"related_concepts={data.get('related_concepts', [])}  "
+        f"mcp_tools={len(data.get('mcp_tools', []))}"
+    )
     doc = {
         "id": _topic_id(topic),
         "topic": topic.lower().strip(),
@@ -139,10 +150,9 @@ def _upsert_topic_sync(topic: str, vector: list[float], data: dict) -> None:
         "cached_at": data.get("cached_at", time.time()),
     }
     idx = _get_index()
-    # id_field="id" makes the key predictable (agentdex:topic:{_topic_id(topic)})
-    # rather than a SHA256 hash, so get_warm() can look it up directly.
     idx.load([doc], id_field="id")
     idx.client.sadd(WARM_TOPICS_KEY, topic.lower().strip())
+    print(f"[redis:upsert] '{topic}' — done, registered in warm set '{WARM_TOPICS_KEY}'")
 
 
 async def upsert_topic(topic: str, vector: list[float], data: dict) -> None:
@@ -153,17 +163,21 @@ async def upsert_topic(topic: str, vector: list[float], data: dict) -> None:
 
 async def set_warm(topic: str, data: dict) -> None:
     """Embed topic, persist result in vector index, and register it as warm."""
+    print(f"[redis:set_warm] '{topic}' — embedding + upserting...")
     payload = {**data, "cached_at": time.time()}
     vector = await embed(topic)
     await upsert_topic(topic, vector, payload)
+    print(f"[redis:set_warm] '{topic}' — now warm")
 
 
 # ── Read path ─────────────────────────────────────────────────────────────────
 
 def _get_warm_sync(topic: str) -> Optional[dict]:
     key = f"{INDEX_PREFIX}:{_topic_id(topic)}"
+    print(f"[redis:get_warm] '{topic}' — looking up key={key}")
     raw: dict = _get_index().client.hgetall(key)
     if not raw:
+        print(f"[redis:get_warm] '{topic}' — MISS")
         return None
 
     def _d(v: object) -> str:
@@ -174,7 +188,7 @@ def _get_warm_sync(topic: str) -> Optional[dict]:
         for k, v in raw.items()
         if k not in (b"embedding", "embedding")
     }
-    return {
+    result = {
         "summary": decoded.get("summary", ""),
         "content_type": decoded.get("content_type", "prose"),
         "key_facts": json.loads(decoded.get("key_facts", "[]")),
@@ -182,6 +196,13 @@ def _get_warm_sync(topic: str) -> Optional[dict]:
         "mcp_tools": json.loads(decoded.get("mcp_tools", "[]")),
         "cached_at": float(decoded.get("cached_at", 0.0)),
     }
+    print(
+        f"[redis:get_warm] '{topic}' — HIT  "
+        f"content_type={result['content_type']}  "
+        f"key_facts={len(result['key_facts'])}  "
+        f"cached_at={result['cached_at']:.0f}"
+    )
+    return result
 
 
 async def get_warm(topic: str) -> Optional[dict]:
@@ -193,6 +214,7 @@ async def get_warm(topic: str) -> Optional[dict]:
 # ── Nearest-neighbor search ───────────────────────────────────────────────────
 
 def _search_nearest_sync(vector: list[float], k: int) -> list[tuple[str, float]]:
+    print(f"[redis:knn] querying index '{INDEX_NAME}' for top-{k} nearest neighbors...")
     query = VectorQuery(
         vector=vector,
         vector_field_name="embedding",
@@ -202,7 +224,8 @@ def _search_nearest_sync(vector: list[float], k: int) -> list[tuple[str, float]]
     )
     try:
         results = _get_index().query(query)
-    except Exception:
+    except Exception as exc:
+        print(f"[redis:knn] query failed: {exc}")
         return []
     out: list[tuple[str, float]] = []
     for r in results:
@@ -212,6 +235,7 @@ def _search_nearest_sync(vector: list[float], k: int) -> list[tuple[str, float]]
         dist = float(r.get("vector_distance", 1.0))
         if t:
             out.append((t, dist))
+    print(f"[redis:knn] results ({len(out)}): {[(t, round(d, 4)) for t, d in out]}")
     return out
 
 
@@ -220,11 +244,14 @@ async def search_nearest_with_scores(query_topic: str, k: int = 10) -> list[tupl
 
     Distance is in [0, 2] for cosine metric; values below ~0.15 indicate a strong match.
     """
+    print(f"[redis:knn] '{query_topic}' — embedding query for KNN search (k={k})...")
     vector = await embed(query_topic)
     loop = asyncio.get_running_loop()
     results = await loop.run_in_executor(_executor, _search_nearest_sync, vector, k)
     normalized = query_topic.lower().strip()
-    return [(t, d) for t, d in results if t.lower().strip() != normalized]
+    filtered = [(t, d) for t, d in results if t.lower().strip() != normalized]
+    print(f"[redis:knn] '{query_topic}' — {len(filtered)} results after excluding self")
+    return filtered
 
 
 async def search_nearest(query_topic: str, k: int = 10) -> list[str]:
@@ -237,7 +264,9 @@ async def search_nearest(query_topic: str, k: int = 10) -> list[str]:
 
 def _all_topics_sync() -> list[str]:
     members = _get_index().client.smembers(WARM_TOPICS_KEY)
-    return [m.decode() if isinstance(m, bytes) else m for m in members]
+    topics = [m.decode() if isinstance(m, bytes) else m for m in members]
+    print(f"[redis:all_topics] {len(topics)} warm topics: {sorted(topics)}")
+    return topics
 
 
 async def all_topics() -> list[str]:

@@ -42,20 +42,28 @@ async def on_request(ctx: Context, sender: str, msg: ResearchRequest):
 
 async def _handle_live(ctx: Context, sender: str, msg: ResearchRequest):
     """The live query a dev agent is waiting on — research, warm, and reply."""
+    ctx.logger.info(f"[primary_worker] LIVE request received — topic='{msg.topic}'  session={msg.session_id}  from={sender}")
     ctx.logger.info(f"[primary_worker] researching '{msg.topic}' via Browserbase...")
     emit_demo_event("cold_started", {"topic": msg.topic, "session_id": msg.session_id})
 
     result = await research_topic(msg.topic)
     await set_warm(msg.topic, result)
 
-    ctx.logger.info(f"[primary_worker] done — '{msg.topic}' ingested and warm")
+    ctx.logger.info(
+        f"[primary_worker] '{msg.topic}' ingested and warm — "
+        f"summary='{result.get('summary', '')[:80]}...'  "
+        f"key_facts={len(result.get('key_facts', []))}  "
+        f"related_concepts={result.get('related_concepts', [])}"
+    )
     emit_demo_event("cold_done", {"topic": msg.topic, "session_id": msg.session_id})
+    ctx.logger.info(f"[primary_worker] sending ResearchResult → {sender}")
     await ctx.send(sender, _to_result(msg, result))
 
 
 async def _handle_speculative(ctx: Context, sender: str, msg: ResearchRequest):
     """A speculative bet — time-boxed so a slow page can't tie up the worker."""
-    ctx.logger.info(f"[primary_worker] betting on '{msg.topic}'...")
+    ctx.logger.info(f"[primary_worker] SPECULATIVE request received — topic='{msg.topic}'  from={sender}")
+    ctx.logger.info(f"[primary_worker] betting on '{msg.topic}' (timeout={config.SPECULATIVE_TIMEOUT_SECS}s)...")
     emit_demo_event("spec_started", {"topic": msg.topic})
 
     try:
@@ -65,24 +73,22 @@ async def _handle_speculative(ctx: Context, sender: str, msg: ResearchRequest):
         )
         set_warm(msg.topic, result)
         ctx.logger.info(
-            f"[primary_worker] '{msg.topic}' is now WARM — ready for instant serving"
+            f"[primary_worker] '{msg.topic}' is now WARM — ready for instant serving  "
+            f"key_facts={len(result.get('key_facts', []))}  "
+            f"related_concepts={result.get('related_concepts', [])}"
         )
-        # ★ The payoff timestamp: this topic is ready BEFORE anyone asked for it.
         emit_demo_event("spec_warm", {"topic": msg.topic})
-
-        # Notify orchestrator so it can log the warm registration
+        ctx.logger.info(f"[primary_worker] notifying orchestrator — sending spec ResearchResult → {sender}")
         await ctx.send(sender, _to_result(msg, result))
     except asyncio.TimeoutError:
         ctx.logger.warning(
-            f"[primary_worker] TIMEOUT on '{msg.topic}' — wasted bet, discarded"
+            f"[primary_worker] TIMEOUT on '{msg.topic}' after {config.SPECULATIVE_TIMEOUT_SECS}s — wasted bet, discarded"
         )
         emit_demo_event("spec_timeout", {"topic": msg.topic})
         if os.getenv("SENTRY_DSN"):
             sentry_sdk.capture_message(
                 f"Speculative worker timeout: {msg.topic}", level="warning"
             )
-            # Flush so the event isn't lost if the process exits before the
-            # background worker delivers it
             sentry_sdk.flush(timeout=5)
 
 

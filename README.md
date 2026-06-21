@@ -15,13 +15,7 @@ dev_agent queries "electrons"  →  *** WARM HIT ***  →  served instantly from
 
 ## Architecture
 
-```
-dev_agent  ──TopicQuery──►  orchestrator  ──ResearchRequest──►  primary_worker
-                                │                                      │
-                                ├──ResearchRequest──►  speculative_worker
-                                │                             │        │
-                                ◄──ResearchResult────────────◄────────◄
-```
+<img width="1024" height="768" alt="Colorful Get Things Done Flowchart Infographic Graph" src="https://github.com/user-attachments/assets/05555842-62e7-4b63-9cb4-a5991a7d1cb4" />
 
 | Agent | File | Role |
 |---|---|---|

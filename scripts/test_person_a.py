@@ -79,7 +79,7 @@ async def main() -> None:
     import os
     _step(f"REDIS_URL = {os.environ.get('REDIS_URL', '(not set — will use redis://localhost:6379)')}")
 
-    from shared.redis_client import set_warm, get_warm, search_nearest, all_topics
+    from shared.redis_client import set_warm, get_warm, search_nearest, search_nearest_with_scores, all_topics
     from shared.pipeline import filter_speculative_candidates
 
     # ── 1. Upsert seed topics ──────────────────────────────────────────────────
@@ -137,6 +137,25 @@ async def main() -> None:
     stray = [k for k in kept if k not in raw]
     assert not stray, f"FAIL: Claude hallucinated topics not in raw list: {stray}"
     print(f"  ✓  budget={BUDGET} respected, all kept topics are from raw list", flush=True)
+
+    # ── 5b. search_nearest_with_scores() ─────────────────────────────────────
+    _sep(f"5b · search_nearest_with_scores('{QUERY_TOPIC}', k=5) — semantic hit detection")
+    _step(f"calling search_nearest_with_scores('{QUERY_TOPIC}', k=5)...")
+    scored = await search_nearest_with_scores(QUERY_TOPIC, k=5)
+    print(f"  results: {[(t, round(d, 4)) for t, d in scored]}", flush=True)
+    assert len(scored) > 0, "FAIL: search_nearest_with_scores returned no results"
+    assert all(isinstance(d, float) for _, d in scored), \
+        "FAIL: distances should be floats"
+    assert all(0.0 <= d <= 2.0 for _, d in scored), \
+        "FAIL: cosine distances should be in [0, 2]"
+    # Verify ordering — closest first
+    distances = [d for _, d in scored]
+    assert distances == sorted(distances), "FAIL: results not ordered closest-first"
+    # A topic very similar to 'atoms' (e.g. 'electrons', 'protons') should surface with
+    # a low distance, confirming the semantic hit path would fire for near-synonyms.
+    closest_topic, closest_dist = scored[0]
+    print(f"  closest  : '{closest_topic}' at distance {closest_dist:.4f}", flush=True)
+    print(f"  ✓  scores present, ordered, and in valid range", flush=True)
 
     # ── 6. Cold-start path (structural check — not re-runnable once seeded) ────
     _sep("6 · Cold-start path (structural)")

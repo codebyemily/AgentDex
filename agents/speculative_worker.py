@@ -15,7 +15,10 @@ from shared.pipeline import research_topic
 load_dotenv()
 
 if os.getenv("SENTRY_DSN"):
-    sentry_sdk.init(dsn=os.environ["SENTRY_DSN"])
+    try:
+        sentry_sdk.init(dsn=os.environ["SENTRY_DSN"])
+    except Exception:
+        pass
 
 # handle_messages_concurrently lets this agent process multiple
 # speculative requests at the same time without queuing them

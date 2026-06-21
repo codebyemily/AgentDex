@@ -16,7 +16,10 @@ from shared.demo_events import emit_demo_event
 load_dotenv()
 
 if os.getenv("SENTRY_DSN"):
-    sentry_sdk.init(dsn=os.environ["SENTRY_DSN"])
+    try:
+        sentry_sdk.init(dsn=os.environ["SENTRY_DSN"])
+    except Exception:
+        pass
 
 # handle_messages_concurrently lets this worker process the live query and the
 # speculative bets at the same time without queuing them behind each other

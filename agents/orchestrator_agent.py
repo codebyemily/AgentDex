@@ -13,26 +13,18 @@ from shared.demo_events import emit_demo_event
 
 load_dotenv()
 
-orchestrator = Agent(
-    name="orchestrator",
-    seed=config.ORCHESTRATOR_SEED,
-    handle_messages_concurrently=True,
-)
-
+orchestrator = Agent(name="orchestrator", seed=config.ORCHESTRATOR_SEED, handle_messages_concurrently=True)
 _pending: dict[str, str] = {}
 
 
 def _build_result(msg: TopicQuery, cached: dict) -> ResearchResult:
     return ResearchResult(
-        topic=msg.topic,
-        session_id=msg.session_id,
-        summary=cached.get("summary", ""),
-        content_type=cached.get("content_type", "prose"),
+        topic=msg.topic, session_id=msg.session_id,
+        summary=cached.get("summary", ""), content_type=cached.get("content_type", "prose"),
         key_facts=json.dumps(cached.get("key_facts", [])),
         related_concepts=json.dumps(cached.get("related_concepts", [])),
         mcp_tools=json.dumps(cached.get("mcp_tools", [])),
-        warm=True,
-        timestamp=cached.get("cached_at", time.time()),
+        warm=True, timestamp=cached.get("cached_at", time.time()),
     )
 
 
@@ -46,7 +38,6 @@ async def on_query(ctx: Context, sender: str, msg: TopicQuery):
     ctx.logger.info(f"[orchestrator] query: '{msg.topic}'  session={msg.session_id}")
     emit_demo_event("query_received", {"topic": msg.topic, "session_id": msg.session_id})
 
-    # Exact warm-cache check
     cached = await get_warm(msg.topic)
     if cached:
         ctx.logger.info(f"[orchestrator] WARM HIT (exact) — serving '{msg.topic}' instantly")
@@ -54,9 +45,7 @@ async def on_query(ctx: Context, sender: str, msg: TopicQuery):
         await ctx.send(sender, _build_result(msg, cached))
         return
 
-    # Semantic cache check + speculative candidate pool (one embed call)
     nearest_scored = await search_nearest_with_scores(msg.topic, k=10)
-
     if nearest_scored:
         best_topic, best_dist = nearest_scored[0]
         if best_dist < config.SEMANTIC_HIT_THRESHOLD:
@@ -67,18 +56,12 @@ async def on_query(ctx: Context, sender: str, msg: TopicQuery):
                 await ctx.send(sender, _build_result(msg, sem_cached))
                 return
 
-    # Dispatch primary worker
     _pending[msg.session_id] = sender
     ctx.logger.info(f"[orchestrator] dispatching primary worker for '{msg.topic}'")
     emit_demo_event("cold_dispatch", {"topic": msg.topic, "session_id": msg.session_id})
-    await ctx.send(
-        config.PRIMARY_WORKER_ADDRESS,
-        ResearchRequest(topic=msg.topic, session_id=msg.session_id, is_speculative=False),
-    )
+    await ctx.send(config.PRIMARY_WORKER_ADDRESS, ResearchRequest(topic=msg.topic, session_id=msg.session_id, is_speculative=False))
 
-    # Speculative expansion — reuse KNN results already fetched above
     raw_candidates = [t for t, _ in nearest_scored]
-
     if raw_candidates:
         ctx.logger.info(f"[orchestrator] Redis returned {len(raw_candidates)} raw candidates for '{msg.topic}': {raw_candidates}")
         candidates = await filter_speculative_candidates(msg.topic, raw_candidates, config.SPECULATION_BUDGET)
@@ -98,10 +81,7 @@ async def on_query(ctx: Context, sender: str, msg: TopicQuery):
             continue
         ctx.logger.info(f"[orchestrator] dispatching speculative bet for '{candidate}'")
         emit_demo_event("spec_dispatch", {"topic": candidate, "parent": msg.topic})
-        await ctx.send(
-            config.SPECULATIVE_WORKER_ADDRESS,
-            ResearchRequest(topic=candidate, session_id=f"spec-{candidate}", is_speculative=True),
-        )
+        await ctx.send(config.SPECULATIVE_WORKER_ADDRESS, ResearchRequest(topic=candidate, session_id=f"spec-{candidate}", is_speculative=True))
 
 
 @orchestrator.on_message(model=ResearchResult)
@@ -117,7 +97,6 @@ async def on_result(ctx: Context, sender: str, msg: ResearchResult):  # noqa: AR
     else:
         ctx.logger.warning(f"[orchestrator] no pending requester for session '{msg.session_id}'")
 
-    # Pre-warm related_concepts extracted from the actual crawled content
     try:
         related = json.loads(msg.related_concepts) if msg.related_concepts else []
     except (json.JSONDecodeError, TypeError):
@@ -132,7 +111,4 @@ async def on_result(ctx: Context, sender: str, msg: ResearchResult):  # noqa: AR
                 continue
             ctx.logger.info(f"[orchestrator] pre-warming related concept '{concept}'")
             emit_demo_event("spec_dispatch", {"topic": concept, "parent": msg.topic})
-            await ctx.send(
-                config.PRIMARY_WORKER_ADDRESS,
-                ResearchRequest(topic=concept, session_id=f"spec-{key}", is_speculative=True),
-            )
+            await ctx.send(config.PRIMARY_WORKER_ADDRESS, ResearchRequest(topic=concept, session_id=f"spec-{key}", is_speculative=True))
